@@ -1,0 +1,570 @@
+---
+title: "Data Science Lab in Medicine: BIG DATA IN HEALTHCARE"
+author: "Induni Pitiyage - 906451, Sara Campolattano - 906453"
+date: "31/05/2024"
+output:
+  html_document:
+    code_folding: hide
+  word_document: default
+  pdf_document: default
+---
+
+
+
+
+```{r message=FALSE, warning=FALSE}
+
+# Load necessary packages
+library(dplyr)
+library(corrplot)
+library(RColorBrewer)
+library(readr)
+library(survival)  # For survival analysis
+library(summarytools) 
+library(survminer)
+library(ggplot2)
+library(splines) 
+library(Greg) # for martingale residuals plot 
+library(glmnet) # for Lasso
+library(kableExtra)
+```
+
+
+# **LAB 2: breast cancer Dataset**
+
+The dataset contains data about survival free from metastasis in 144 women affected by breast cancer with lymph node involvement. Follow-up time is recorded in months. The “event” variable is either 1 (metastasis or death) or 0 (censoring). The main objective is to built a comprehensive predictive model by considering both clinical and molecular (gene expression) factors, allowing for better understanding of patients with a faster response to treatment.
+
+```{r message=FALSE, warning=FALSE}
+
+cancer <- read_delim("C:/Users/Sara/Downloads/breast.cancer.txt", 
+    delim = "\t", escape_double = FALSE, 
+     trim_ws = TRUE)
+
+head(cancer)%>%
+  kbl(caption = "") %>%
+ kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+
+```{r}
+# Replace blank cells with NA on all columns
+cancer[cancer == ''] <- NA
+# Total missing data in the dataset
+blank = sum(is.na(cancer))
+cat("Total blank cells or not available cells in the dataset:",blank,"\n")
+
+```
+
+
+## **Descriptive Analyses/ Exploratory Analysis**
+
+The dataset containes information about 144 women. These patients were all over 26 years old. The average age of patients are around 44 to 53 years old (51%) and the least observed age category of patients are 26-35 years of old(4%). Follow-up period results in 1 year and 6 months. Among 144 patients, 41(85%) deaths or metastasis or death occurred during first 8.8 months of follow-up while at the end of follow-up 7(15%) deaths or metastasis have occurred(*Table 02*). There are 3 types of tumor grading information included in the data set: 
+ 
+ * Well diff/Well Differentiated (Grade 1): Cells look similar to normal cells, slow growth, better prognosis.
+ * Intermediate (Grade 2): Cells have mixed features, moderate growth, intermediate prognosis.
+ * Poorly diff/Poorly Differentiated (Grade 3): Cells look very abnormal, fast growth, worse prognosis.
+ 
+Majority of patients have intermediate tumor grading 55(38%) while there are 48(33%) patients with poorly differentiated tumor grading and 41(28%) patients with well differentiated tumor grading(*Table 01*).
+*Table 03* shows the statistics of Grade vs Diam, N, ER, Age, time, event, age category and time var with respect to each category in Grade which are:Intermediate, Poorly diff and Well diff. We observe that most of the patients with poorly differentiated tumor grading have tumor size greater than 2cm.
+
+
+**Table 01 - Summary statistics of Diam, N, ER, Grade, Age, time, event**
+
+```{r}
+cancer$event = as.factor(cancer$event)
+cancer$Diam = as.factor(cancer$Diam)
+cancer$N = as.factor(cancer$N)
+cancer$ER = as.factor(cancer$ER)
+cancer$Grade = as.factor(cancer$Grade)
+df = cancer %>% select(Diam, N, ER, Grade, Age, time, event)
+
+
+datai= df %>% 
+  mutate(
+    age_category = cut(
+      Age,
+      breaks = 3,
+      labels = c("26-35", "35-44","44-53") ) )
+
+datai= datai %>% 
+  mutate(
+    time_var = cut(
+      time,
+      breaks = 2,
+      labels = c("FirstHalf_followUp", "SecondHalf_followUp") ) )
+
+datai$event <- factor(datai$event, levels = c(0, 1), labels = c("Censoring", "Metastasis or Death"))
+
+
+summary(datai)
+
+```
+
+
+**Table 02 - Follow-up time (FirstHalf_followUp < 8.8 months, SecondHalf_followUp > 8.8 months) vs event**
+
+```{r}
+t=table(datai$event,datai$time_var)
+# Create a marginal table
+marginal_table <- addmargins(t)
+# Print the marginal table
+print(marginal_table)
+```
+
+**Table 03 - Grade vs Diam, N, ER, Age, time, event, age category, time var**
+
+
+```{r}
+by(datai, datai$Grade,summary)
+```
+
+
+**Table 04 - Descriptive statistics of potential prognostic genes**
+
+```{r}
+can = cancer %>% select(-c(Diam, N, ER, Grade, Age, time, event))
+summary(can)
+```
+
+
+**Kaplan-Meier survival curve analysis of patients according to tumor grading**
+
+```{r message=FALSE, warning=FALSE}
+
+cancer <- read_delim("C:/Users/Sara/Downloads/breast.cancer.txt", 
+    delim = "\t", escape_double = FALSE, 
+     trim_ws = TRUE)
+
+# Kaplan-Meier survival curves for a clinical variable (e.g., grade)
+km_fit <- survfit(Surv(time, event) ~ Grade, data = cancer)
+
+ggsurvplot(km_fit,
+        pval = TRUE, conf.int = TRUE,
+          risk.table = TRUE,
+         risk.table.col = "strata", 
+          linetype = "strata", 
+         surv.median.line = "hv", 
+          ggtheme = theme_bw(), 
+          palette = c("#E7B800", "#2E9FDF","red"))
+
+```
+
+Kaplan-Meier survival curve analysis is performed to gain insights of the proportion of the individuals surviving at different time points. Initially for the Intermediate grade, there were 55 individuals with 19 events, for the Poorly diff grade there were 48 individuals with 22 events and for the well diff grade there were 41 individuals with 7 events. The median survival is approximately 12 months for Intermediate grade and 14 months for Poorly diff grade while for well diff grade median survival time is 'NA' which implies survival curve has not reached to the 50% survival probability level due to number of events are less than the half of the events that has experienced(*Table 04*). Upper confidence limit for all 3 categories appeared as 'NA' which states that survival curve does not provide enough information beyond the median survival time due to censoring or few events.
+
+
+**Table 04 - Summary table for survival analysis according to tumor grading**
+
+```{r}
+summary(km_fit)$table
+```
+
+
+**Correlation in-between gene expressions**
+
+```{r}
+corrs<-cor(cancer[,9:78])
+a<-apply(corrs,1,function(x) abs(x)>0.75 & abs(x)<1)
+# variables with a correlation >0.75 with at least another variable
+b<-rowSums(a)>0
+vars<-names(b[b==T])
+
+
+corrplot(cor(cancer[,vars]), method = "number",type="upper", order="hclust",
+         col=brewer.pal(n=8, name="Spectral"))
+```
+
+
+
+
+
+
+## **Univariate analysis - Diam, N, ER, Grade, Age**
+
+**Univariate analysis (Cox model) of the association of each clinical variable (Diam, N, ER, Grade, Age) with the outcome under study.**
+
+*Table 05* shows the univariate analysis results that helps to gain the insights between the relationship of these features:Diam, N, ER, Grade, Age and the risk of the event(metastasis or death). Statistically significant coefficients are: Diam, N, ER and Age while Grade is not significant. By analyzing HR(*hazard ratio*) we can state that tumors with a diameter greater than 2cm are associated with a 92% higher risk of metastasis or death compared to tumors with a diameter <= 2cm. Having 4 or more involved lymph nodes(>=4) has very high risk of metastasis or death compared to having fewer than 4 involved lymph nodes on the other hand positive ER(Estrogen Receptor) has a lower risk in comparison to negative ER(Estrogen Receptor) and each additional year of age at diagnosis is associated with a 5.8% decrease in the risk of metastasis or death. Tumor grading does not show a significant association in the univariate analysis, but this might change in a multivariate context where the effects of all variables are considered simultaneously.
+
+
+**Table 05 - Univariate analysis for Diam, N, ER, Grade, Age**
+
+```{r}
+vars <- names(cancer[, c(4:8)])
+output<-lapply(vars,function(var) {
+  formula    <- as.formula(paste("Surv(time,event)~",var))
+  fit.uni <- coxph(formula,data=cancer)
+  beta <- coef(fit.uni)
+  se   <- sqrt(diag(fit.uni$var))
+  CI   <- round(exp(confint(fit.uni)), 3)
+  round(c(exp(beta), CI, p=1-pchisq((beta/se)^2, 1)),3)
+  })
+results<-as.data.frame(matrix(unlist(output),ncol=4,byrow=T))
+
+names(results)<-c("HR","lower95%CI","upper95%CI","p")
+
+results$features<- c('(Diam)>2cm', '(N)>=4', '(ER)Positive', '(Grade)Poorly diff','(Grade)Well diff','Age')
+
+results %>%
+  kbl(caption = "") %>%
+ kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+
+## **"basic" predictive model - Diam, N, ER, Grade, Age**
+
+**Development of the "basic" predictive model (Cox model) with clinical covariates: Diam, N, ER, Grade, Age. Do not include gene expression variables.**
+
+The p-value for all three overall tests (likelihood, Wald, and score) is highly significant.
+All three tests provide evidence that the predictors collectively have a significant effect on survival. These significant models indicate that the model with the predictors is significantly better at explaining the variability in survival times compared to a model without predictors.
+
+In this analysis the significant covariates are number of involved lymph nodes(N>=4) and Age.  Therefore this suggest that patients with 4 or more involved lymph nodes have about twice the risk of metastasis or death. The confidence interval does not include 1, further confirming the significance.Age which shows a negative association with the hazard, suggesting older age may slightly reduce the hazard. The confidence interval is very close to including 1, indicating the evidence is not conclusive.
+ 
+Other covariates ((*Diam*)tumor diameter, (*ER*)estrogen receptor status, (*Grade*)tumor grade) do not show statistically significant associations with the hazard in this model. The confidence interval does include 1, further confirming these covariates are not significantly associated. However, the direction of the hazard ratios might still provide clinically useful insights, even if they are not statistically significant in this analysis.
+
+
+**Table 06 - Multivariate analysis for Diam, N, ER, Grade, Age**
+
+```{r}
+basic_model<-coxph(Surv(time, event) ~ factor(Diam)+factor(N) +factor(ER)+factor(Grade)+Age,data=cancer)
+summary(basic_model)
+```
+
+
+
+## **Assumptions**
+
+**Evaluate functional form of continuous variables and "Proportional Hazards" assumption for all covariates.**
+
+To evaluate the functional form of the continuous variable(Age) we used the following plots which use to assess the linearity assumption:
+  * the martingale residuals plot
+  * the plot of Karnofsky Performance Score vs Hazard Ratio
+  
+From the martingale residual plot we observe the slight presence of non-linearity and residuals are not randomly scattered around zero and also the presence of some outliers. However this can be further confirmed by observing the plot of Karnofsky Performance Score vs Hazard Ratio. This plot clearly shows a curved relationship suggesting the presence of non-linearity.
+
+```{r}
+par(mfrow=c(2,1),mar=c(4,4,2,2))
+
+# linearity assumption using the martingale residuals plot and splines
+# martingale
+mar.res<-resid(basic_model,type='martingale')
+plot(cancer$Age, mar.res, pch=16, col="black",
+xlab="Time", ylab="Martingale Residuals",
+main="Check functional form of Age")
+lines(lowess(cancer$Age, mar.res),col='red')
+
+#  splines
+model.age.bs <- coxph(Surv(time, event>0) ~ bs(Age,4), data = cancer)
+par(mar=c(4,4,1,1))
+plotHR(model.age.bs, term="Age", plot.bty="o", ylog=T, xlim = c(30, 100), rug="density", xlab="Karnofsky",polygon_ci=T)
+
+```
+
+
+**Schonfeld residuals plots**
+
+Schonfeld residuals are used to check the assumption, that the hazard ratios between different levels of covariates are constant over time. From the graphical inspection, there is no pattern with time for these covariates: Diam, N, ER, Grade while for Age we observe a gradual increament of the covariate with the time. Therefore the assumption of proportional hazards appears to be supported for these covariates: Diam, N, ER, Grade only.
+
+```{r}
+
+par(mfrow=c(2,2),mar=c(4,4,2,2))
+#  schoenfeild residuals plot
+checkPH.age<-cox.zph(basic_model)[1]
+plot(checkPH.age,main="Diam")
+points(checkPH.age$x,checkPH.age$y,pch=16,col="black")
+abline(h=0,lty=10,col=2)
+
+checkPH.age<-cox.zph(basic_model)[2]
+plot(checkPH.age, main="N")
+points(checkPH.age$x,checkPH.age$y,pch=16,col="black")
+abline(h=0,lty=10,col=2)
+
+checkPH.age<-cox.zph(basic_model)[3]
+plot(checkPH.age, main = "ER")
+points(checkPH.age$x,checkPH.age$y,pch=16,col="black")
+abline(h=0,lty=10,col=2)
+
+checkPH.age<-cox.zph(basic_model)[4]
+plot(checkPH.age, main="Grade")
+points(checkPH.age$x,checkPH.age$y,pch=16,col="black")
+abline(h=0,lty=10,col=2)
+
+checkPH.age<-cox.zph(basic_model)[5]
+plot(checkPH.age, main= "Age")
+points(checkPH.age$x,checkPH.age$y,pch=16,col="black")
+abline(h=0,lty=10,col=2)
+
+
+```
+
+
+**log(-log(Survival)) plot**
+
+
+Log(-log(Survival)) plot is another graphical method that used in survival analysis to assess the proportional hazards assumption and to visualize the survival distribution for categorical covariates. From the following plots we are able to observe that for all the categories in covariates(Diam, N, ER, Grade) are able to maintain equi-distance which implies that the hazard ratios between groups are constant over time. However in log(-log(Survival)) plot for Grade,  2 categories(Intermediate and poorly diff) are crossed at the end of the plot which means that the relative risk between the groups changes slightly over time, but it may not be substantial enough to invalidate the overall model. This minor violation of ph assumption may due to limited data at the end of the period.
+
+
+```{r}
+par(mfrow=c(2,2),mar=c(4,4,2,2))
+
+# log(-log(Survival)) plot
+
+# Diam
+km.diam<-survfit(Surv(time, event) ~ factor(Diam),data=cancer)
+plot(km.diam, col = c("brown", "gold2"), fun = "cloglog", 
+     ylab = "log(-log(Survival))", xlab = "log(time)", 
+     main = "Diam",
+     lwd = 2, lty = 1, 
+     pch = c(19), cex = 1.2)
+legend("topleft", legend = levels(factor(cancer$Diam)), 
+       col = c("brown", "gold2"), lwd = 5, 
+        title = "Diam")
+grid(nx = NULL, ny = NULL, col = "gray", lty = "dotted")
+
+# n
+km.n<-survfit(Surv(time, event) ~ factor(N),data=cancer)
+plot(km.n, col = c("brown", "gold2"), fun = "cloglog", 
+     ylab = "log(-log(Survival))", xlab = "log(time)", 
+     main = "N",
+     lwd = 2, lty = 1, 
+     pch = c(19), cex = 1.2)
+legend("topleft", legend = levels(factor(cancer$N)), 
+       col = c("brown", "gold2"), lwd = 5,
+       title ="N")
+grid(nx = NULL, ny = NULL, col = "gray", lty = "dotted")
+
+# ER
+km.er<-survfit(Surv(time, event) ~ factor(ER),data=cancer)
+plot(km.er, col = c("brown", "gold2"), fun = "cloglog", 
+     ylab = "log(-log(Survival))", xlab = "log(time)", 
+     main = "ER",
+     lwd = 2, lty = 1, 
+     pch = c(19), cex = 1.2)
+legend("topleft", legend = levels(factor(cancer$ER)), 
+       col = c("brown", "gold2"), lwd = 5, 
+        title = "ER ")
+grid(nx = NULL, ny = NULL, col = "gray", lty = "dotted")
+
+
+km.grade<-survfit(Surv(time, event) ~ factor(Grade),data=cancer)
+plot(km.grade, col = c("brown", "gold2","palegreen3"), fun = "cloglog", 
+     ylab = "log(-log(Survival))", xlab = "log(time)", 
+     main = "Grade",
+     lwd = 2, lty = 1, 
+     pch = c(19), cex = 1.2)
+legend("topleft", legend = levels(factor(cancer$Grade)), 
+       col = c("brown", "gold2","palegreen3"), lwd = 5, 
+        title = "Grade")
+grid(nx = NULL, ny = NULL, col = "gray", lty = "dotted")
+
+
+
+
+```
+
+
+## **Univariate analysis - gene expression**
+
+**Univariate analysis (Cox model) of the association of each of gene expression with the outcome under study.**
+ 
+From the *Table 07* below, statistically significant gene expression are: Contig63649_RC, NUSAP1, QSCN6L1, SCUBE2, GMPS, ZNF533, RTN4RL1, Contig40831_RC, MELK, COL4A2, DTL, STK32B, ORC6L, RFC4, MS4A7, IGFBP5, IGFBP5.1, PRC1, CENPA and  NM_004702. By looking at HR(Hazard Ratio) these significant gene expressions are associated with high risk of metastasis or death: PRC1, COL4A2, QSCN6L1, NUSAP1,RFC4, DTL, MELK, ORC6L, CENPA, NM_004702, Contig40831_RC, GMPS, Contig63649_RC, IGFBP5.1, IGFBP5 while these gene expressions are associated with low risk of metastasis or death: SCUBE2, ZNF533, MS4A7, RTN4RL1, STK32B.  The confidence interval does not include 1, further confirming these covariates are statistically significant.
+
+**Table 07 - Univariate analysis - gene expression** 
+ 
+```{r}
+vars <- names(cancer[, c(9:78)])
+output<-lapply(vars,function(var) {
+  formula    <- as.formula(paste("Surv(time,event)~",var))
+  fit.uni <- coxph(formula,data=cancer)
+  beta <- coef(fit.uni)
+  se   <- sqrt(diag(fit.uni$var))
+  CI   <- round(exp(confint(fit.uni)), 3)
+  round(c(exp(beta), CI, p=1-pchisq((beta/se)^2, 1)),3)
+  })
+results_gene<-as.data.frame(matrix(unlist(output),ncol=4,byrow=T))
+
+names(results_gene)<-c("HR","lower95%CI","upper95%CI","p")
+
+results_gene$features<- vars
+
+
+df_highlight <- results_gene %>%
+  mutate(
+  significance = ifelse(p < 0.05, "**","")
+  )
+
+df_sorted <- df_highlight[order(df_highlight$p),]
+
+df_sorted %>%
+  kbl(caption = "") %>%
+ kable_styling(bootstrap_options = c("striped", "hover"))
+
+
+``` 
+
+## **Benjamini-Hochberg method**
+
+**Select variables with significant association (p<0.05) after adjustment by Benjamini-Hochberg method.**
+
+
+*Table 08* shows the results obtained using the Benjamini-Hochberg procedure to control for multiple comparisons, helping to reduce the likelihood of false positive findings in univariate analysis. Among all the significant features, these features are associated with very high hazard ratios (HR ranging from ~5 to ~16), indicating a strong association with increased risk : PRC1, QSCN6L1, NUSAP1, MELK, ORC6L and CENPA. These features also have HRs indicating increased risk (ranging from ~2.7 to ~ 4.9) : IGFBP5, IGFBP5.1 and NM_004702. This is the only significant feature that shows a reduced risk ZNF533. All the significant features confidence interval does not include 1.
+
+
+
+**Table 08 - significant variables (p<0.05) after adjustment by Benjamini-Hochberg method.**
+
+```{r}
+#results_gene$q.holm<-p.adjust(results_gene$p,method="holm")
+results_gene$q.BH<-p.adjust(results_gene$p,method="BH")
+
+
+results_geneS =  results_gene[results_gene$q.BH<0.05,]
+
+df <- results_geneS %>%
+  mutate(
+  significance = ifelse(q.BH < 0.05, "**","")
+  )
+
+df <- df[order(df$HR),]
+
+df %>%
+  kbl(caption = "") %>%
+ kable_styling(bootstrap_options = c("striped", "hover"))
+
+
+```
+
+## **LASSO  method**
+
+**Selection of gene expression variables associated with outcome by penalized Cox model with LASSO  method. Do not include clinical variables in the model.**
+
+
+Initially,  at lower values of $\lambda$, the coefficients are relatively large. As $\lambda$ increases, the penalty term becomes more influential, and the coefficients begin to shrink toward zero.
+
+**Plotting estimated coefficients at each value of the shrinkage parameter lambda **
+
+```{r}
+X <- model.matrix(~., subset(cancer, select = -c(Diam, N, ER, Grade, Age, time, event)))
+lasso.pen <- glmnet(x = X[, -1], y = Surv(cancer$time, cancer$event),family ="cox", alpha=1,nlambda = 100)
+lambdas <- lasso.pen$lambda
+par(mar=c(4,4,5,2))
+plot(lambdas, lambdas, type ="n", xlab = bquote(beta), xlim = range(lasso.pen$beta),
+     ylab = bquote(lambda), ylim = rev(range(lambdas)),yaxs = "i",log = "y")
+abline(v = 0, lwd = 4)
+grid(nx = NULL, ny = NULL, col = "gray", lty = "dotted")
+
+for (i in 1:nrow(lasso.pen$beta)) lines(lasso.pen$beta[i, ], lambdas, col = i, lwd = 2)
+mtext(rownames(lasso.pen$beta), 3, at = lasso.pen$beta[, 81], line = .2,
+      col = 1:nrow(lasso.pen$beta), font = 2, las = 3, adj = 0, cex = .75)
+```
+
+
+**Optimal value of lambda(shrinkage parameter) that minimizes the cross-validation error**
+
+```{r message=FALSE, warning=FALSE}
+# features would be selected using the optimal lambda
+set.seed(050)
+cv.lasso<-cv.glmnet(x = X[, -1], y = Surv(cancer$time, cancer$event),family = 'cox', nfold = 10,alpha=1)
+
+plot(cv.lasso$lambda, cv.lasso$cvm, type = "l", lwd = 3, col ="brown",
+     xlab = bquote(lambda),
+     ylab = "Partial Likelihood Deviance",
+     main = "Optimal value of shrinkage parameter")
+points(cv.lasso$lambda[which.min(cv.lasso$cvm)], min(cv.lasso$cvm),pch = 16, col = "gold")
+grid(nx = NULL, ny = NULL, col = "gray", lty = "dotted")
+
+
+
+```
+
+The plot displays the cross-validation error according to the $\lambda$. The point on the line indicates that the log of the optimal value of lambda is approximately closer to 0.05, which is the one that minimizes the prediction error. This lambda value will give the most accurate model. The exact value of $\lambda$ can be viewed as follow:
+
+
+```{r}
+# Optimal value of shrinkage parameter
+cv.lasso$lambda.min
+```
+
+
+Following gene expression variables associated with outcome by penalized Cox model with LASSO  method.
+
+```{r}
+opt.lambda<-cv.lasso$lambda[which.min(cv.lasso$cvm)]
+opt.lambda.coef<-as.numeric(coef(cv.lasso,s=opt.lambda))
+
+#selected features:
+rownames(coef(cv.lasso))[opt.lambda.coef!=0]
+
+```
+
+
+
+## **"Augmented" predictive model**
+
+**Development of the "augmented" predictive model (Cox model) i.e., with clinical variables and gene  expression variables selected in the previous step.**
+
+
+The p-value for all three overall tests (likelihood, Wald, and score) are highly significant.
+All three tests provide evidence that the predictors collectively have a significant effect on survival. These significant models indicate that the model with the predictors is significantly better at explaining the variability in survival times compared to a model without predictors.
+
+In this analysis the significant covariates are these gene expressions: *Contig32125_RC, MMP9 , RUNDC1, RAB6B, COL4A2, ORC6L, PITRM1, IGFBP5.1, PRC1, ESM1*. Among these significant gene expressions, these genes: *Contig32125_RC, MMP9 , RUNDC1, COL4A2, ORC6L, IGFBP5.1, PRC1* are associated with high risk of metastasis or death while these expressions are associated with low risk: *RAB6B, PITRM1, ESM1*. The confidence interval for above mentioned gene expressions does not include 1, further confirming the significance
+
+Other covariates included in the model do not show statistically significant associations with the hazard in this model. The confidence interval does include 1, further confirming these covariates are not significantly associated. However, the direction of the hazard ratios might still provide clinically useful insights, even if they are not statistically significant in this analysis.
+
+
+
+```{r}
+
+agu_model<-coxph(Surv(time, event) ~ factor(Diam)+factor(N) +factor(ER)+factor(Grade) + Age
+                 +Contig63649_RC+NUSAP1+QSCN6L1+Contig32125_RC+SCUBE2+
+                   OXCT1+MMP9+RUNDC1+KNTC2+GPR180+RAB6B+
+                   ZNF533+RTN4RL1+Contig40831_RC+COL4A2+STK32B+
+                   ORC6L+MS4A7+HRASLS+PITRM1+IGFBP5.1+
+                   PRC1+Contig20217_RC+EGLN1+ESM1,data=cancer)
+summary(agu_model)
+
+```
+
+## **Prediction of event risk**
+
+**Prediction of event risk at a fixed time-point (e.g., 1 year) for 3 "type" subjects (randomly selected in the dataset or new hypothetical subjects) based on the base model and the augmented model.**
+
+*Table 09* shows the predicted risk of the event at 1 year using the base model and the augmented model. Base predictive model contains clinical covariates: *Diam, N, ER, Grade, Age* while augmented model contains all the clinical covariates and some gene expressions: *Contig63649_RC, NUSAP1, QSCN6L1, Contig32125_RC, SCUBE2,OXCT1, MMP9, RUNDC1, KNTC2, GPR180, RAB6B,ZNF533, RTN4RL1, Contig40831_RC, COL4A2, STK32B,ORC6L, MS4A7, HRASLS, PITRM1, IGFBP5.1, PRC1, Contig20217_RC, EGLN1, ESM1*.
+
+Among all 3 subjects, higher risk for base model is showed by the first subject who is 44 years old and has intermediate tumor grading along with a tumor diameter higher than 2cm and number of lymph node involved are less than 4. On the contrary, out of 3 subjects augmented model shows the least risk for the first subject.
+
+In the augmented model, highest risk out of the 3 subjects is shown by the third subject who is 41 years old and has poor diff(grade 3) tumor grading along with a tumor diameter less than 2cm and number of lymph node involved are less than 4. However, risk base model shows a lower risk in comparison to augmented model. The risk predictions vary significantly between the two models, indicating that the augmented model's additional information can either increase or decrease the estimated risk based on the subject's characteristics.
+
+**Table 09 - Prediction of event risk based on the base model and the augmented model**
+
+```{r}
+# Fit base and augmented models
+basic_model<-coxph(Surv(time, event) ~ factor(Diam)+factor(N) +factor(ER)+factor(Grade)+Age,data=cancer)
+
+agu_model<-coxph(Surv(time, event) ~ factor(Diam)+factor(N) +factor(ER)+factor(Grade) + Age
+                 +Contig63649_RC+NUSAP1+QSCN6L1+Contig32125_RC+SCUBE2+
+                   OXCT1+MMP9+RUNDC1+KNTC2+GPR180+RAB6B+
+                   ZNF533+RTN4RL1+Contig40831_RC+COL4A2+STK32B+
+                   ORC6L+MS4A7+HRASLS+PITRM1+IGFBP5.1+
+                   PRC1+Contig20217_RC+EGLN1+ESM1,data=cancer)
+
+# Select subjects (randomly selected)
+set.seed(123)
+selected_subjects <- cancer[sample(nrow(cancer), 3), ]
+
+# predict survival for 1 year
+fit1<-survfit(basic_model,newdata=selected_subjects)
+fit2<-survfit(agu_model,newdata=selected_subjects)
+
+# in survival data, time is included as months, therefor times = 12 months
+selected_subjects$risk_base_model<- 1-as.numeric(summary(fit1,times=12)$surv)
+selected_subjects$risk_agu_model<- 1-as.numeric(summary(fit2,times=12)$surv)
+
+selected_subjects %>% select(risk_base_model , risk_agu_model,Diam, N, ER, Grade, Age, 
+                             Contig63649_RC, NUSAP1, QSCN6L1, Contig32125_RC, SCUBE2,
+                   OXCT1, MMP9, RUNDC1, KNTC2, GPR180, RAB6B,
+                   ZNF533, RTN4RL1, Contig40831_RC, COL4A2, STK32B,
+                   ORC6L, MS4A7, HRASLS, PITRM1, IGFBP5.1,
+                   PRC1, Contig20217_RC, EGLN1, ESM1) %>%
+  kbl(caption = "") %>%
+ kable_styling(bootstrap_options = c("striped", "hover"))
+
+```
